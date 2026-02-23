@@ -6,8 +6,6 @@ from scipy.optimize import nnls
 from sklearn.metrics import mean_squared_error, r2_score
 from scipy.stats import pearsonr
 from sklearn.model_selection import train_test_split
-import scanpy as sc
-import scipy
 
 # Methods
 def reverse_complement(seq):

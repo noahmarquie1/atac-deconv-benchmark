@@ -5,4 +5,5 @@ snapatac2==2.8.0
 macs3==3.0.3
 plotly==6.1.1
 scanpy==1.11.5
+scikit-learn==1.8.0
 
