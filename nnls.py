@@ -6,7 +6,7 @@ from scipy.linalg import svd
 import os
 
 TEST = True
-TEST_PEAKS = 500
+TEST_PEAKS = 5_000
 TEST_FRAGMENTS = 10_000
 
 # Fragment processing
@@ -56,8 +56,7 @@ def count_fragments(fragments_file: str, universe: pd.DataFrame,
 
 def subset_fragments_by_celltype(experiment_fragments: dict[str, str],
                                   barcode_celltype_map: pd.Series,
-                                  output_dir: str,
-                                  max_fragments: int = None) -> dict[str, str]:
+                                  output_dir: str) -> dict[str, str]:
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
@@ -69,13 +68,17 @@ def subset_fragments_by_celltype(experiment_fragments: dict[str, str],
 
     for experiment_name, fragments_file in experiment_fragments.items():
         print(f"\nProcessing {experiment_name} ...")
-        _open = gzip.open if fragments_file.endswith(".gz") else open
         n_matched = 0
         n_unmatched = 0
-        total_processed = 0
+        with open(fragments_file, "rt") as fh:
+            length = sum(1 for _ in fh.readlines())
 
-        with _open(fragments_file, "rt") as fh:
-            for line in fh:
+        with open(fragments_file, "rt") as fh:
+            for i in range(round(length / 100)):
+                line = fh.readline()
+
+                print(f"Percent complete: {i / (length / 100) * 100:.2f}% ")
+
                 if line.startswith("#"):
                     continue
                 parts = line.strip().split("\t")
@@ -83,12 +86,8 @@ def subset_fragments_by_celltype(experiment_fragments: dict[str, str],
                     continue
 
                 barcode = parts[3]
-
-                # Process barcode to match barcode_celltype_map format (reverse complement)
-                processed_barcode = process_barcode(barcode)
-
-                if processed_barcode in barcode_celltype_map.index:
-                    cell_type = barcode_celltype_map[processed_barcode]
+                if barcode in barcode_celltype_map.index:
+                    cell_type = barcode_celltype_map[barcode]
                     if isinstance(cell_type, pd.Series):
                         cell_type = cell_type.iloc[0]
                     output_handles[cell_type].write(line)
@@ -96,12 +95,9 @@ def subset_fragments_by_celltype(experiment_fragments: dict[str, str],
                 else:
                     n_unmatched += 1
 
-                total_processed += 1
-                if max_fragments and total_processed >= max_fragments:
-                    break
-
         print(f"  Matched:   {n_matched:,} fragments")
         print(f"  Unmatched: {n_unmatched:,} fragments")
+        print(f"Percentage Matched: {n_matched / (n_matched + n_unmatched + 1):.2%}")
 
     for handle in output_handles.values():
         handle.close()
@@ -205,7 +201,7 @@ def build_count_matrix(sample_fragments: dict[str, str],
 
 def build_signature_matrix(filtered_matrix: pd.DataFrame,
                             cell_type_map: pd.Series,
-                            n_peaks: int = 50) -> pd.DataFrame:
+                            n_peaks: int = 500) -> pd.DataFrame:
     # Average replicates by cell type
     cell_type_means = filtered_matrix.T.groupby(cell_type_map).mean().T
 
@@ -374,8 +370,7 @@ if TEST:
     #subset_fragments_by_celltype(
     #    sample_fragments,
     #    celltype_map,
-    #    "sorted_fragments",
-    #    max_fragments=TEST_FRAGMENTS
+    #    "sorted_fragments"
     #)
     celltype_fragments = {ct: f"sorted_fragments/{ct}_fragments.tsv" for ct in cell_types}
 
@@ -389,13 +384,14 @@ if TEST:
 
     cell_type_map = pd.Series({ct: ct for ct in filtered.columns})
     signature_matrix = build_signature_matrix(filtered, cell_type_map)
+    print(signature_matrix.head())
+
     mixture_vector = build_mixture_vector(
         'sample03_data/fragments/SRR13252436_fragments.tsv',
         universe,
-        signature_matrix
+        signature_matrix,
+        max_fragments=TEST_FRAGMENTS
     )
-
-    print(signature_matrix.head())
     print(mixture_vector)
 
     print("Shapes of matrices:")
