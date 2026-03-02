@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from collections import Counter
 
 def evaluate_deconvolution(estimated_proportions: pd.Series, true_proportions: pd.Series) -> dict:
     # Compute error metrics
@@ -16,19 +17,6 @@ def evaluate_deconvolution(estimated_proportions: pd.Series, true_proportions: p
         correlation = np.corrcoef(true_proportions.values, estimated_proportions.values)[0, 1]
     else:
         correlation = np.nan
-
-    # Print comparison
-    print("\n" + "=" * 70)
-    print("DECONVOLUTION EVALUATION")
-    print("=" * 70)
-    print(f"{'Cell Type':<25} {'True':<10} {'Estimated':<10} {'Error':<10}")
-    print("─" * 70)
-
-    for ct in sorted(estimated_proportions.index, key=lambda x: true_proportions[x], reverse=True):
-        t = true_proportions[ct]
-        e = estimated_proportions[ct]
-        err = e - t
-        print(f"{ct:<25} {t:>9.4f}  {e:>9.4f}  {err:>+9.4f}")
 
     print("─" * 70)
     print(f"\nError Metrics:")
@@ -49,31 +37,48 @@ def evaluate_deconvolution(estimated_proportions: pd.Series, true_proportions: p
     }
 
 
-def get_true_proportions(fragments_file: str,
-                         barcode_mapping: pd.Series,
-                         max_fragments: int = None) -> pd.Series:
-    cell_type_counts = {}
+def get_true_proportions(
+        fragments_file: str,
+        barcode_mapping: pd.Series,
+        max_fragments: int = None,
+        batch_size: int = 100_000,
+    ) -> pd.Series:
+
+    mapping = barcode_mapping.to_dict()
+    counts = Counter()
+    barcodes_batch: list[str] = []
+
     n = 0
     with open(fragments_file, "rt") as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
-            parts = line.strip().split("\t")
+
+            parts = line.rstrip("\n").split("\t")
             if len(parts) >= 4:
-                barcode = parts[3]
-                if barcode in barcode_mapping.index:
-                    cell_type = barcode_mapping[barcode]
-                    if isinstance(cell_type, pd.Series):
-                        cell_type = cell_type.iloc[0]
-                    cell_type_counts[cell_type] = cell_type_counts.get(cell_type, 0) + 1
+                barcodes_batch.append(parts[3])
 
             n += 1
-            if n >= max_fragments:
+            if max_fragments is not None and n >= max_fragments:
                 break
 
-    total = sum(cell_type_counts.values())
+            if len(barcodes_batch) >= batch_size:
+                for bc in barcodes_batch:
+                    ct = mapping.get(bc)
+                    if ct is not None:
+                        counts[ct] += 1
+                barcodes_batch.clear()
+
+    # Finish the last batch
+    if barcodes_batch:
+        for bc in barcodes_batch:
+            ct = mapping.get(bc)
+            if ct is not None:
+                counts[ct] += 1
+
+    total = sum(counts.values())
     if total == 0:
         print("Warning: No matched barcodes found!")
         return pd.Series(dtype=float)
 
-    return pd.Series(cell_type_counts) / total
+    return pd.Series(dict(counts), dtype=float) / total

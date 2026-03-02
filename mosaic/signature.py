@@ -6,7 +6,7 @@ def build_peak_index(universe: pd.DataFrame) -> dict:
     index = {}
     for i, row in universe.iterrows():
         index.setdefault(row["chrom"], []).append(
-            (int(row["start"]), int(row["end"]), int(i))
+            (int(row["start"]), int(row["end"]), i)
         )
     for chrom in index:
         index[chrom].sort(key=lambda x: x[0])
