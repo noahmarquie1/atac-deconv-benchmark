@@ -5,6 +5,7 @@ import snapatac2 as snap
 from snapatac2.genome import hg38
 from pathlib import Path
 import os
+import shutil
 
 def build_peak_index(universe: pd.DataFrame) -> dict:
     index = {}
@@ -95,71 +96,50 @@ def build_count_matrix(sample_fragments: dict[str, str],
     return pd.DataFrame(columns, index=universe["peak_id"])
 
 
-def build_binned_count_matrix(sample_fragments: dict[str, str],
-                              barcode_mapping: pd.Series,
-                              bin_size: int = 500) -> pd.DataFrame:
+def bin_fragments(fragments_files: list[str], bin_size: int = 500):
     adatas = []
-    input_num = ""
-    while type(input_num) != int:
-        input_num = input("Would you like to build a count matrix from fragments (0) or AnnData (1)?")
-        try:
-            input_num = int(input_num)
-        except ValueError:
-            print("Invalid input. Please enter an integer.")
+    shutil.rmtree("binned_data", ignore_errors=True)
+    os.makedirs("binned_data", exist_ok=True)
 
-    if input_num == 0:
-        for i, path in enumerate(sample_fragments.values()):
-            print(f"Counting fragments for {path} ...")
-            adata = snap.pp.import_fragments(
-                Path("sample02_data/fragments/SRR13252435_fragments.tsv"),
-                chrom_sizes=hg38,
-                sorted_by_barcode=False,
-                file=Path(f"binned_fragments/sample{i}_adata.h5ad"),
-            )
+    for i, path in enumerate(fragments_files):
+        print(f"Counting fragments for {path} ...")
+        adata = snap.pp.import_fragments(
+            Path(path),
+            chrom_sizes=hg38,
+            sorted_by_barcode=False,
+            file=Path(f"binned_data/sample_{i+1}.h5ad")
+        )
+        snap.pp.add_tile_matrix(adata, bin_size=bin_size)
+        adatas.append((f"sample_{i+1}", adata))
 
-            snap.pp.add_tile_matrix(
-                adata,
-                bin_size=bin_size,
-                inplace=True
-            )
-            adatas.append((f"sample{i}_adata", adata))
-            combined_data = snap.AnnDataSet(adatas=adatas, filename="binned_fragments/combined.h5ads")
+    shutil.rmtree("combined_data", ignore_errors=True)
+    os.makedirs("combined_data", exist_ok=True)
 
-    elif input_num == 1:
-        dir = input("Please enter the path to the AnnData files: ")
-        files = [
-            os.path.join(dir, f)
-            for f in os.listdir(dir)
-            if f.endswith(".h5ad")
-        ]
-        adatas = []
-        for i, file in enumerate(files):
-            adata = snap.read(Path("binned_fragments/sample01_adata.h5ad"), backed="r+")
-            adatas.append((f"sample{i}_adata", adata))
+    combined_data = snap.AnnDataSet(adatas=adatas, filename="combined_data/combined.h5ads")
+    return combined_data
 
-        combined_data = snap.AnnDataSet(adatas=adatas, filename="binned_fragments/combined.h5ads")
-    else:
-        print("Invalid input. Please enter 0 or 1. Quitting program")
-        quit()
 
-    barcode_mapping = barcode_mapping[~barcode_mapping.index.duplicated(keep='first')]
+def read_binned_fragments(binned_fragments_file: str) -> snap.AnnDataSet:
+    return snap.read(Path(binned_fragments_file), backed="r+")
 
-    combined_data.obs["cell_type"] = barcode_mapping.reindex(combined_data.obs_names).fillna("Unknown")
-    cell_type_data = snap.tl.aggregate_X(
+
+def build_binned_count_matrix(combined_data: snap.AnnDataSet) -> pd.DataFrame:
+    snap.pp.select_features(
         combined_data,
-        groupby="cell_type"
+        n_features=50000,
+        inplace=True
     )
+    selected_mask = np.array(combined_data.var['selected'])
+    selected_bin_names = [name for name, sel in zip(combined_data.var_names, selected_mask) if sel]
+    X = combined_data.X[:, selected_mask]
+    print("Starting to build count matrix ...")
 
-    counts = combined_data.X[:]
-    sparsity = counts.nnz / (counts.shape[0] * counts.shape[1])
-    print(f"{sparsity * 100:.2f}% non-zero entries")
-
-    count_matrix_df = pd.DataFrame(
-        counts.T,
-        index=cell_type_data.var_names,
-        columns=cell_type_data.obs_names,
+    count_matrix = pd.DataFrame(
+        X.T.toarray(),  # (n_bins × n_cells)
+        index=selected_bin_names,
+        columns=combined_data.obs_names
     )
-    return count_matrix_df
+    return count_matrix
 
 
 # Quality control
@@ -235,3 +215,28 @@ def build_mixture_vector(mixture_fragments_file: str,
 
     print(f"  Mixture vector length: {len(m)} peaks")
     return m
+
+
+def build_binned_mixture_vector(fragments_file: str,
+                                signature_matrix: pd.DataFrame,
+                                bin_size: int = 500) -> pd.Series:
+
+    adata = snap.pp.import_fragments(
+        Path(fragments_file),
+        chrom_sizes=hg38,
+        sorted_by_barcode=False,
+        file=Path("binned_fragments/bulk_mixture.h5ad"),
+    )
+
+    snap.pp.add_tile_matrix(
+        adata,
+        bin_size=bin_size,
+        inplace=True
+    )
+
+    count_matrix = adata.X
+    bin_names = adata.var_names
+    bulk_counts = count_matrix[0, :].toarray().flatten()
+    mixture_vector = pd.Series(bulk_counts, index=bin_names, name='bulk_mixture')
+    mixture_vector = mixture_vector.reindex(signature_matrix.index, fill_value=0)
+    return mixture_vector
